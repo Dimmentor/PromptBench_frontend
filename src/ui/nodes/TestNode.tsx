@@ -9,11 +9,12 @@ type TestNodeData = {
   collapsed: boolean
   onToggleCollapsed: (testId: string) => void
   onDeleteTest: (testId: string) => void
+  lastEvent?: string | null
   progress?: { total: number; done: number; failed: number; pending: number } | null
 }
 
 export function TestNode(props: NodeProps<TestNodeData>) {
-  const { test, onCreateRequest, onRun, collapsed, onToggleCollapsed, onDeleteTest, progress } = props.data
+  const { test, onCreateRequest, onRun, collapsed, onToggleCollapsed, onDeleteTest, lastEvent, progress } = props.data
 
   return (
     <div className="node node-test">
@@ -21,6 +22,7 @@ export function TestNode(props: NodeProps<TestNodeData>) {
         <div className="node-title-left">
           <div className="node-name">{test.name}</div>
           <div className="node-sub">{test.status}</div>
+          {lastEvent ? <div className="node-sub ellipsis" title={lastEvent}>{lastEvent}</div> : null}
         </div>
         <div className="node-actions">
           <button className="btn" onClick={() => onCreateRequest(test.id)}>

@@ -7,12 +7,12 @@ export default defineConfig({
   server: {
     proxy: {
       '/tests': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8020',
         changeOrigin: true,
         ws: true,
       },
       '/openapi.json': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8020',
         changeOrigin: true,
       },
     },

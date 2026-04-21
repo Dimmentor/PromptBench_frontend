@@ -12,7 +12,9 @@ export function RequestNode(props: NodeProps<RequestNodeData>) {
     <div className="node node-request">
       <div className="node-name">{request.id}</div>
       <div className="node-sub">{request.status}</div>
-      <div className="node-sub mono">{request.file_path}</div>
+      <div className="node-sub mono ellipsis" title={request.file_path}>
+        {request.file_path}
+      </div>
     </div>
   )
 }

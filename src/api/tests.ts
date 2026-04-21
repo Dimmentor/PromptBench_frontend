@@ -51,7 +51,11 @@ export async function createTest(data: TestCreate): Promise<TestRead> {
   return http<TestRead>('/tests', { method: 'POST', body: data })
 }
 
-export async function createRequest(testId: string, payload: unknown): Promise<{
+export async function createRequest(
+  testId: string,
+  payload: unknown,
+  name?: string,
+): Promise<{
   id: string
   test_id: string
   file_path: string
@@ -59,7 +63,7 @@ export async function createRequest(testId: string, payload: unknown): Promise<{
 }> {
   return http(`/tests/${encodeURIComponent(testId)}/requests`, {
     method: 'POST',
-    body: { payload },
+    body: { payload, name: name ?? null },
   })
 }
 

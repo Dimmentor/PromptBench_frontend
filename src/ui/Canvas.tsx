@@ -42,16 +42,20 @@ type Selected =
   | { kind: 'request'; testId: string; requestId: string }
   | { kind: 'response'; testId: string; requestId: string }
 
-function computeExpandedBlockHeight(requestCount: number) {
-  // A compact but stable formula:
-  // - header spacing above children
-  // - per-request row height
-  // - bottom padding so last nodes don't touch boundary
+type InspectorMode = 'pretty' | 'raw'
+
+function formatTime(tsMs: number) {
+  const d = new Date(tsMs)
+  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+}
+
+function computeExpandedBlockHeight() {
+  // 2 rows: requests row + responses row
   const header = 90
-  const row = 110
+  const row = 120
   const bottom = 90
-  const rows = Math.max(1, requestCount)
-  return header + rows * row + bottom
+  return header + row * 2 + bottom
 }
 
 function buildGraph(
@@ -60,6 +64,7 @@ function buildGraph(
   collapsedByTestId: Record<string, boolean | undefined>,
   offsetsByTestId: Record<string, { x: number; y: number } | undefined>,
   progressByTestId: Record<string, { total: number; done: number; failed: number; pending: number } | null | undefined>,
+  eventsByTestId: Record<string, Array<{ ts_ms: number; level: string; message: string }> | undefined>,
 ): { nodes: FlowNode[]; edges: Edge[]; basePosByTestId: Record<string, { x: number; y: number }> } {
   const nodes: FlowNode[] = []
   const edges: Edge[] = []
@@ -67,7 +72,10 @@ function buildGraph(
 
   const left = 60
   const top = 40
-  const childGapY = 110
+  const colGapX = 380
+  const boundaryTop = 150
+  const reqRowY = 175
+  const respRowY = 310
 
   let cursorY = top
 
@@ -94,42 +102,46 @@ function buildGraph(
         collapsed,
         onToggleCollapsed: handlers.onToggleCollapsed,
         onDeleteTest: handlers.onDeleteTest,
+        lastEvent: (eventsByTestId[test.id]?.at(-1)?.message ?? null) as any,
         progress: progressByTestId[test.id] ?? null,
       },
       style: { zIndex: 3 } as any,
     } as Node<TestNodeData>)
 
     // Push next tests down based on expanded/collapsed height (no overlap).
-    const blockH = collapsed ? 170 : computeExpandedBlockHeight(test.requests.length)
+    const blockH = collapsed ? 170 : computeExpandedBlockHeight()
     cursorY += blockH
 
     if (collapsed) return
 
     // Boundary around requests/responses area (expanded only).
     const reqCount = test.requests.length
-    const boundaryH = Math.max(160, computeExpandedBlockHeight(reqCount) - 74)
+    const boundaryW = Math.max(770, 80 + Math.max(1, reqCount) * colGapX)
+    const boundaryH = Math.max(220, computeExpandedBlockHeight() - 74)
     const boundaryNodeId = `boundary:${test.id}`
     nodes.push({
       id: boundaryNodeId,
       type: 'boundary',
-      position: { x: testX + 16, y: testY + 74 },
+      position: { x: testX + 16, y: testY + boundaryTop },
       data: { label: 'requests / responses' },
       draggable: false,
       selectable: false,
       connectable: false,
-      style: { width: 770, height: boundaryH, zIndex: 0 } as any,
+      style: { width: boundaryW, height: boundaryH, zIndex: 0 } as any,
     } as Node<BoundaryNodeData>)
 
     test.requests.forEach((req, rIdx) => {
       const reqNodeId = `req:${test.id}:${req.id}`
       const respNodeId = req.response ? `resp:${test.id}:${req.id}` : null
 
-      const baseY = testY + 90 + rIdx * childGapY
+      const x = testX + 40 + rIdx * colGapX
+      const requestY = testY + reqRowY
+      const responseY = testY + respRowY
 
       nodes.push({
         id: reqNodeId,
         type: 'request',
-        position: { x: testX + 40, y: baseY },
+        position: { x, y: requestY },
         data: { request: req },
         style: { zIndex: 2 } as any,
       } as Node<RequestNodeData>)
@@ -146,7 +158,7 @@ function buildGraph(
         nodes.push({
           id: respNodeId,
           type: 'response',
-          position: { x: testX + 420, y: baseY },
+          position: { x, y: responseY },
           data: { response: req.response },
           style: { zIndex: 2 } as any,
         } as Node<ResponseNodeData>)
@@ -171,6 +183,7 @@ export function Canvas() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [progressByTestId, setProgressByTestId] = useState<Record<string, { total: number; done: number; failed: number; pending: number } | null | undefined>>({})
+  const [eventsByTestId, setEventsByTestId] = useState<Record<string, Array<{ ts_ms: number; level: string; message: string }>>>({})
   const [selected, setSelected] = useState<Selected>({ kind: 'none' })
   const [inspector, setInspector] = useState<{
     title: string
@@ -181,6 +194,8 @@ export function Canvas() {
   const [editorText, setEditorText] = useState<string>('')
   const [editorError, setEditorError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [inspectorVisible, setInspectorVisible] = useState(true)
+  const [inspectorMode, setInspectorMode] = useState<InspectorMode>('pretty')
   const [collapsedByTestId, setCollapsedByTestId] = useState<Record<string, boolean | undefined>>({})
   const [offsetsByTestId, setOffsetsByTestId] = useState<Record<string, { x: number; y: number } | undefined>>({})
 
@@ -188,6 +203,7 @@ export function Canvas() {
   const wsByTestIdRef = useRef<Record<string, WebSocket | undefined>>({})
   const lastProgressRef = useRef<Record<string, string | undefined>>({})
   const basePosByTestIdRef = useRef<Record<string, { x: number; y: number }>>({})
+  const eventsScrollRef = useRef<HTMLDivElement | null>(null)
 
   const refresh = useCallback(async () => {
     abortRef.current?.abort()
@@ -195,6 +211,7 @@ export function Canvas() {
     abortRef.current = ac
 
     setLoading(true)
+    // Don't clear previous canvas content while loading (prevents "everything disappears").
     setError(null)
     try {
       const testsList = await listTests(ac.signal)
@@ -202,7 +219,13 @@ export function Canvas() {
       const full = await Promise.all(testsList.map((t) => getTest(t.id, ac.signal)))
       setTests(full)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // React StrictMode runs effects twice -> AbortController will often cancel the first run.
+      // Ignore abort errors to avoid noisy UI ("signal is aborted...").
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.toLowerCase().includes('aborted') || msg.toLowerCase().includes('aborterror')) {
+        return
+      }
+      setError(msg)
     } finally {
       setLoading(false)
     }
@@ -223,7 +246,9 @@ export function Canvas() {
   const onCreateRequest = useCallback(
     async (testId: string) => {
       // Пустой шаблон payload (как договорились).
-      await createRequest(testId, {})
+      const name = window.prompt('Request name', `request_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '_')}`)
+      if (!name) return
+      await createRequest(testId, {}, name)
       await refresh()
     },
     [refresh],
@@ -310,11 +335,24 @@ export function Canvas() {
         try {
           const msg = JSON.parse(ev.data) as any
           if (msg?.error) return
-          const key = JSON.stringify(msg)
-          if (lastProgressRef.current[t.id] === key) return
+          // New protocol: { type: "progress", progress: {...}, events: [...] }
+          const progress = msg?.progress ?? msg
+          const events = Array.isArray(msg?.events) ? msg.events : []
+
+          const key = JSON.stringify(progress)
+          if (lastProgressRef.current[t.id] === key && events.length === 0) return
           lastProgressRef.current[t.id] = key
 
-          setProgressByTestId((prev) => ({ ...prev, [t.id]: msg }))
+          if (progress?.total !== undefined) {
+            setProgressByTestId((prev) => ({ ...prev, [t.id]: progress }))
+          }
+          if (events.length > 0) {
+            setEventsByTestId((prev) => {
+              const cur = prev[t.id] ?? []
+              const next = cur.concat(events)
+              return { ...prev, [t.id]: next.slice(-300) }
+            })
+          }
 
           // When progress changes, refresh that specific test so new responses appear.
           void getTest(t.id).then((fresh) => {
@@ -374,7 +412,15 @@ export function Canvas() {
     return () => {
       cancelled = true
     }
-  }, [selected, tests])
+  }, [selected, tests, eventsByTestId])
+
+  // Auto-scroll events when viewing a test.
+  useEffect(() => {
+    if (selected.kind !== 'test') return
+    const el = eventsScrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [selected, eventsByTestId])
 
   const nodeTypes = useMemo<NodeTypes>(
     () => ({
@@ -394,11 +440,12 @@ export function Canvas() {
         collapsedByTestId,
         offsetsByTestId,
         progressByTestId,
+        eventsByTestId,
       )
       basePosByTestIdRef.current = built.basePosByTestId
       return { nodes: built.nodes, edges: built.edges }
     },
-    [tests, onCreateRequest, onRun, onToggleCollapsed, onDeleteTest, collapsedByTestId, offsetsByTestId, progressByTestId],
+    [tests, onCreateRequest, onRun, onToggleCollapsed, onDeleteTest, collapsedByTestId, offsetsByTestId, progressByTestId, eventsByTestId],
   )
 
   return (
@@ -419,12 +466,15 @@ export function Canvas() {
           <button className="btn" onClick={() => void refresh()}>
             refresh
           </button>
+          <button className="btn" onClick={() => setInspectorVisible((v) => !v)}>
+            {inspectorVisible ? 'hide panel' : 'show panel'}
+          </button>
         </div>
       </div>
 
       {error ? <div className="error">{error}</div> : null}
 
-      <div className="canvas">
+      <div className={inspectorVisible ? 'canvas' : 'canvas canvas--no-inspector'}>
         <div className="canvas-main">
           <ReactFlow
             nodes={nodes}
@@ -459,9 +509,48 @@ export function Canvas() {
           </ReactFlow>
         </div>
 
+        {inspectorVisible ? (
         <div className="inspector">
           <div className="inspector-title">{inspector?.title ?? 'select a node'}</div>
-          {selected.kind === 'request' ? (
+          <div className="inspector-actions" style={{ borderBottom: '1px solid var(--border)' }}>
+            <button className="btn" onClick={() => setInspectorMode('pretty')}>
+              pretty
+            </button>
+            <button className="btn" onClick={() => setInspectorMode('raw')}>
+              raw
+            </button>
+          </div>
+          {selected.kind === 'test' ? (
+            inspectorMode === 'raw' ? (
+              <pre className="inspector-pre">
+                {JSON.stringify(
+                  {
+                    progress: progressByTestId[selected.testId] ?? null,
+                    events: eventsByTestId[selected.testId] ?? [],
+                  },
+                  null,
+                  2,
+                )}
+              </pre>
+            ) : (
+              <div className="events">
+                <div className="events-head">
+                  <div className="pretty-title">events</div>
+                  <div className="events-count">{(eventsByTestId[selected.testId] ?? []).length}</div>
+                </div>
+                <div className="events-list" ref={eventsScrollRef}>
+                  {(eventsByTestId[selected.testId] ?? []).map((e, idx) => (
+                    <div key={`${e.ts_ms}-${idx}`} className={`event event-${String(e.level).toLowerCase()}`}>
+                      <div className="event-ts">{formatTime(e.ts_ms)}</div>
+                      <div className="event-msg" title={e.message}>
+                        {e.message}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          ) : selected.kind === 'request' ? (
             <div className="inspector-editor">
               <div className="inspector-actions">
                 <button
@@ -521,11 +610,54 @@ export function Canvas() {
               />
             </div>
           ) : (
-            <pre className="inspector-pre">
-              {inspector ? JSON.stringify({ body: inspector.body, meta: inspector.meta, error: inspector.error }, null, 2) : '—'}
-            </pre>
+            <div className="inspector-view">
+              {(() => {
+                if (!inspector) return <pre className="inspector-pre">—</pre>
+                const raw = { body: inspector.body, meta: inspector.meta, error: inspector.error }
+                if (inspectorMode === 'raw') {
+                  return <pre className="inspector-pre">{JSON.stringify(raw, null, 2)}</pre>
+                }
+
+                const b: any = inspector.body
+                const content =
+                  b?.choices?.[0]?.message?.content ??
+                  b?.choices?.[0]?.delta?.content ??
+                  null
+
+                if (!content) {
+                  return <pre className="inspector-pre">{JSON.stringify(raw, null, 2)}</pre>
+                }
+
+                const meta = {
+                  model: b?.model,
+                  id: b?.id,
+                  thread_id: b?.thread_id ?? b?.conversation_id,
+                  usage: b?.usage,
+                }
+
+                return (
+                  <div className="pretty">
+                    <div className="pretty-head">
+                      <div className="pretty-title">assistant content</div>
+                      <button
+                        className="btn"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(String(content))
+                        }}
+                      >
+                        copy
+                      </button>
+                    </div>
+                    <pre className="pretty-content">{String(content)}</pre>
+                    <div className="pretty-title">meta</div>
+                    <pre className="inspector-pre">{JSON.stringify(meta, null, 2)}</pre>
+                  </div>
+                )
+              })()}
+            </div>
           )}
         </div>
+        ) : null}
       </div>
     </div>
   )

@@ -1,14 +1,14 @@
 :root {
   color-scheme: light;
-  --bg: #0b0c10;
-  --panel: #111318;
-  --panel-2: #161a22;
-  --text: #e5e7eb;
-  --muted: #9ca3af;
-  --border: rgba(255, 255, 255, 0.08);
-  --accent: #8b5cf6;
-  --danger: #ef4444;
-  --shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  --bg: #f6f7fb;
+  --panel: #ffffff;
+  --panel-2: #fbfbfe;
+  --text: #111827;
+  --muted: #6b7280;
+  --border: rgba(17, 24, 39, 0.12);
+  --accent: #6d28d9;
+  --danger: #b91c1c;
+  --shadow: 0 12px 30px rgba(17, 24, 39, 0.08);
   font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
   font-size: 14px;
   line-height: 1.4;
